@@ -1,270 +1,255 @@
-# 🚀 Go Clean Architecture
+# 🚀 Go Clean Architecture Skill
 
-Opinionated Go backend architecture for building scalable, maintainable services with **Clean / Onion Architecture**, **strict dependency boundaries**, **constructor-based dependency injection**, and **event-driven workflows**.
+Generate and maintain Go backend services using **Clean Architecture**, **strict dependency rules**, **constructor injection**, and **event-driven workflows**.
 
-Designed from real-world backend engineering practices and codified into a repeatable development workflow.
+This repository is not a starter template.
 
----
-
-## ✨ Features
-
-🏗️ **Clean Architecture**
-
-* Strict dependency direction
-* Layer isolation
-* Framework-independent business logic
-
-🔌 **Interface at Point of Use**
-
-* Consumers define contracts
-* Reduced coupling
-* Easier testing
-
-🧩 **Constructor-Based Dependency Injection**
-
-* No global state
-* No service locators
-* Explicit wiring
-
-🎯 **Pure Domain Layer**
-
-* No ORM
-* No HTTP concerns
-* No framework imports
-
-⚡ **Event-Driven Projections**
-
-* Publish side effects asynchronously
-* In-memory event broker
-* Eventual consistency
-
-🧪 **Testing First**
-
-* Unit tests via mocks
-* Repository integration tests
-* Enforced architecture validation
+It is an **AI Skill** that guides code generation and keeps architectural consistency while building features.
 
 ---
 
-# Architecture
+# What Is This?
+
+This skill teaches an AI assistant how to create backend features following predefined architectural rules.
+
+Instead of manually designing structure every time, you describe the feature and the AI generates code that follows the architecture.
+
+Example:
 
 ```text
-HTTP Handler
-     ↓
-Usecase
-     ↓
-Repository
-     ↓
-Domain
+Create Customer CRUD
 ```
 
-Dependencies only move inward.
+AI generates:
 
 ```text
-handler → usecase → repository → domain
-```
-
----
-
-# Project Structure
-
-```text
-cmd/
 internal/
-├── api/http/
-├── config/
-├── domain/
+├── domain/customer.go
+├── repository/customer/
+│   ├── interface.go
+│   ├── entity.go
+│   ├── dto.go
+│   └── postgres.go
+├── usecase/customer/
+├── api/http/customer/
 ├── events/
-├── middleware/
-├── repository/
-├── usecase/
-pkg/
-└── broker/
-migrations/
-docs/
 ```
+
+All files follow the architecture automatically.
 
 ---
 
-# Quick Start
+# Install Skill
 
-Clone the repository:
+Clone repository:
 
 ```bash
-git clone https://github.com/<your-username>/golang-clean-architecture.git
-
-cd golang-clean-architecture
+git clone https://github.com/<your-user>/golang-clean-architecture.git
 ```
 
-Install dependencies:
+Add the skill to your AI coding environment.
 
-```bash
-go mod tidy
-```
-
-Run:
-
-```bash
-go run cmd/main/main.go
-```
-
-Run tests:
-
-```bash
-go test ./...
-```
-
----
-
-# Example — Create a Customer Service
-
-## 1. Create Domain
-
-```go
-// internal/domain/customer.go
-
-package domain
-
-type Customer struct {
-    ID    uint
-    Name  string
-    Email string
-}
-```
-
----
-
-## 2. Create Repository
-
-```go
-repo := customerrepo.NewCustomerPostgres(db)
-```
-
-Responsible for:
-
-* Persistence
-* Mapping
-* Query filtering
-
----
-
-## 3. Create Usecase
-
-```go
-uc := customerusecase.NewCustomerUsecase(
-    repo,
-    broker,
-)
-```
-
-Responsible for:
-
-* Business rules
-* Validation
-* Event publishing
-
----
-
-## 4. Create HTTP Handler
-
-```go
-handler := customerhandler.NewHandler(uc)
-
-handler.RegisterRoutes(router)
-```
-
-Responsible for:
-
-* Request parsing
-* Response serialization
-
----
-
-## 5. Wire Everything
-
-```go
-customerRepo := customerrepo.NewCustomerPostgres(db)
-
-customerUsecase := customerusecase.NewCustomerUsecase(
-    customerRepo,
-    eventBroker,
-)
-
-customerHandler := customer.NewHandler(
-    customerUsecase,
-)
-
-customerHandler.RegisterRoutes(router)
-```
-
-Done 🎉
-
-You now have:
+Example:
 
 ```text
-domain
-↓
-repository
+.skills/
+└── golang-clean-architecture/
+```
+
+---
+
+# How To Use
+
+Start a conversation with your AI agent.
+
+## Example 1 — Create a New Service
+
+Prompt:
+
+```text
+Using golang-clean-architecture skill:
+
+Create a Customer service.
+
+Requirements:
+- CRUD endpoints
+- Postgres repository
+- Event on customer creation
+- Unit + integration tests
+```
+
+Generated output:
+
+```text
+internal/domain/customer.go
+
+internal/repository/customer/
+internal/usecase/customer/
+internal/api/http/customer/
+
+internal/events/customercreated.go
+```
+
+Everything follows dependency rules automatically.
+
+---
+
+## Example 2 — Add Feature
+
+Prompt:
+
+```text
+Using golang-clean-architecture skill:
+
+Add Invoice entity.
+
+Requirements:
+- Create invoice
+- List invoices
+- Publish InvoiceCreated event
+```
+
+Generated:
+
+```text
+domain/invoice.go
+
+repository/invoice/
+
+usecase/invoice/
+
+api/http/invoice/
+```
+
+No manual architecture decisions.
+
+---
+
+## Example 3 — Refactor Existing Project
+
+Prompt:
+
+```text
+Using golang-clean-architecture skill:
+
+Move billing logic from handlers
+into usecases.
+
+Remove repository access from HTTP layer.
+Generate tests.
+```
+
+Skill will:
+
+✅ Detect architecture violations
+✅ Move logic to correct layer
+✅ Regenerate interfaces
+✅ Update dependency wiring
+
+---
+
+# What The Skill Enforces
+
+## Domain
+
+```text
+Pure business objects
+No framework imports
+```
+
+## Repository
+
+```text
+Persistence only
+```
+
+## Usecase
+
+```text
+Business rules
+Event publishing
+```
+
+## Handler
+
+```text
+HTTP transport only
+```
+
+Dependencies:
+
+```text
+handler
 ↓
 usecase
 ↓
-handler
+repository
 ↓
-events
+domain
 ```
 
-with clear boundaries and testability.
-
 ---
 
-# Design Rules
+# Example Workflow
 
-✅ Domain imports only standard library
-✅ Constructor injection only
-✅ Interface-driven architecture
-✅ No repository access from handlers
-✅ No ORM access from usecases
-✅ Async side effects through events
+Developer:
 
----
-
-# Testing
-
-Run all tests:
-
-```bash
-go test ./...
+```text
+Add Customer feature
 ```
 
-Run usecase tests:
+↓
 
-```bash
-go test ./internal/usecase/...
+AI:
+
+```text
+Generate domain
+Generate repository
+Generate usecase
+Generate handler
+Generate tests
+Wire main.go
 ```
 
-Repository integration tests use testcontainers.
+↓
+
+Developer:
+
+```text
+Review
+Adjust business rules
+Merge
+```
 
 ---
 
-# Why This Exists
+# Validation
 
-Most backend projects start clean and become difficult to maintain after enough features.
+Before completing generation, the skill verifies:
 
-This project provides conventions that keep services:
-
-* predictable
-* testable
-* scalable
-* easier to evolve
-
----
-
-# Contributing
-
-PRs and discussions are welcome.
-
-If you have ideas to improve architecture boundaries, testing workflows, or developer experience — open an issue.
+* No circular imports
+* Constructor injection
+* Interface contracts
+* Mock generation
+* Test coverage
+* Event consistency
 
 ---
 
-⭐ If this helped you, give the repository a star.
+# Why Use It
+
+You focus on:
+
+✔ Business logic
+✔ Product requirements
+
+The skill handles:
+
+✔ Project structure
+✔ Layer boundaries
+✔ Boilerplate generation
+✔ Consistency
+
+---
+
+⭐ If useful, give the repo a star.
