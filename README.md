@@ -1,3 +1,16 @@
+Install Skill
+
+Clone repository:
+
+git clone https://github.com/<your-user>/golang-clean-architecture.git
+
+Add the skill to your AI coding environment.
+
+Example:
+
+.skills/
+└── golang-clean-architecture/
+
 # 🏗️ Generated Architecture
 
 When the AI generates a feature, it follows a fixed architecture.
