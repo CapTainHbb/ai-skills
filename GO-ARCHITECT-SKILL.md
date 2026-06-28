@@ -214,8 +214,8 @@ pkg/
         interface.go         # Broker contract
         gochannel.go         # In-memory implementation
 migrations/
-    <timestamp>_init.up.sql  # SQL migration files
-    <timestamp>_init.down.sql
+    <timestamp>_<name>.up.sql   # One pair per feature
+    <timestamp>_<name>.down.sql
 docs/
     swagger.json             # Generated swagger (checked in)
 config.yaml                  # Default configuration
@@ -354,11 +354,15 @@ func (u *xUsecase) Create(ctx context.Context, x domain.X) (domain.X, error) {
 }
 ```
 
-### Step 4: Event (if needed)
+### Step 4: Migration
+
+Create `migrations/<timestamp>_add_x.up.sql` and `<timestamp>_add_x.down.sql` with the new table, foreign keys, and indexes. Follow existing migration naming.
+
+### Step 5: Event (if needed)
 
 Create `internal/events/xcreated.go`.
 
-### Step 5: HTTP Handler
+### Step 6: HTTP Handler
 
 Create files under `internal/api/http/<entity>/`:
 
@@ -385,7 +389,7 @@ func (h *Handler) RegisterRoutes(router gin.IRouter) {
 
 Include swagger annotations (`@Summary`, `@Param`, `@Success`, `@Router`) on each method.
 
-### Step 6: Wire in `cmd/main/main.go`
+### Step 7: Wire in `cmd/main/main.go`
 
 ```go
 xRepo := xRepo.NewXPostgres(db)
@@ -394,7 +398,7 @@ xHandler := x.NewHandler(xUsecase)
 xHandler.RegisterRoutes(router)
 ```
 
-### Step 7: Tests
+### Step 8: Tests
 
 - `internal/usecase/<entity>/crud_test.go` — Unit tests with mockery mocks
 - `internal/repository/<entity>/postgres_test.go` — Integration tests with testcontainers
@@ -406,8 +410,9 @@ xHandler.RegisterRoutes(router)
 ### Adding a new entity (e.g., "Invoice")
 
 1. Create exactly: `domain/invoice.go`, `repository/invoice/{interface,entity,dto,postgres}.go`, `usecase/invoice/crud.go`, `api/http/invoice/{handler,dto}.go`
-2. Wire in `main.go` following existing patterns
-3. Each new package must be in its own directory (no putting multiple entities in one package)
+2. Create migration files `migrations/<timestamp>_add_invoice.{up,down}.sql`
+3. Wire in `main.go` following existing patterns
+4. Each new package must be in its own directory (no putting multiple entities in one package)
 
 ### Adding a new layer to an existing entity
 
@@ -585,6 +590,11 @@ Use this checklist when reviewing any new code generated within this architectur
 - [ ] Standard error response format
 - [ ] `FromDomainToResponse` helper for slice conversions
 - [ ] No repository or broker imports
+
+### Migrations
+- [ ] Up migration creates table with all columns, foreign keys, and indexes
+- [ ] Down migration drops table (safe reverse order if dependencies exist)
+- [ ] Migration timestamp matches feature order (newer > older)
 
 ### Main Wiring
 - [ ] All dependencies explicitly constructed in order
