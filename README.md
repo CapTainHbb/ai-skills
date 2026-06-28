@@ -1,182 +1,235 @@
-# 🚀 Go Clean Architecture Skill
+# 🏗️ Generated Architecture
 
-Generate and maintain Go backend services using **Clean Architecture**, **strict dependency rules**, **constructor injection**, and **event-driven workflows**.
+When the AI generates a feature, it follows a fixed architecture.
 
-This repository is not a starter template.
+The goal is simple:
 
-It is an **AI Skill** that guides code generation and keeps architectural consistency while building features.
+> Keep business logic independent from frameworks, databases, and delivery mechanisms.
 
----
-
-# What Is This?
-
-This skill teaches an AI assistant how to create backend features following predefined architectural rules.
-
-Instead of manually designing structure every time, you describe the feature and the AI generates code that follows the architecture.
-
-Example:
-
-```text
-Create Customer CRUD
-```
-
-AI generates:
+Example generated feature:
 
 ```text
 internal/
-├── domain/customer.go
-├── repository/customer/
-│   ├── interface.go
-│   ├── entity.go
-│   ├── dto.go
-│   └── postgres.go
-├── usecase/customer/
-├── api/http/customer/
+├── domain/
+│   └── customer.go
+│
+├── repository/
+│   └── customer/
+│       ├── interface.go
+│       ├── entity.go
+│       ├── dto.go
+│       └── postgres.go
+│
+├── usecase/
+│   └── customer/
+│       ├── crud.go
+│       ├── dto.go
+│       └── errors.go
+│
+├── api/
+│   └── http/
+│       └── customer/
+│           ├── handler.go
+│           └── dto.go
+│
 ├── events/
+│   └── customercreated.go
+│
+pkg/
+└── broker/
 ```
-
-All files follow the architecture automatically.
 
 ---
 
-# Install Skill
+# How It Works
 
-Clone repository:
+Every request moves through layers.
 
-```bash
-git clone https://github.com/<your-user>/golang-clean-architecture.git
+```text
+HTTP Request
+     ↓
+Handler
+     ↓
+Usecase
+     ↓
+Repository
+     ↓
+Database
 ```
 
-Add the skill to your AI coding environment.
+Side effects happen independently:
+
+```text
+Usecase
+   ↓
+Publish Event
+   ↓
+Broker
+   ↓
+Subscribers
+```
+
+---
+
+## 1. Domain → Business Model
+
+```go
+type Customer struct {
+    ID uint
+    Name string
+}
+```
+
+Contains:
+
+* Entities
+* Constants
+* Value objects
+* Config
+
+Rules:
+
+✅ No HTTP
+✅ No ORM
+✅ No framework imports
+
+Think of this as:
+
+> "What the business is."
+
+---
+
+## 2. Repository → Data Layer
+
+Repository converts domain objects into persistence models.
 
 Example:
 
 ```text
-.skills/
-└── golang-clean-architecture/
+Customer
+↓
+Repository
+↓
+Postgres
 ```
+
+Responsibilities:
+
+* Queries
+* Mapping
+* Pagination
+* Transactions
+
+Rules:
+
+✅ Knows database
+❌ Does not know HTTP
+❌ Does not know business workflows
+
+Think of this as:
+
+> "How data is stored."
 
 ---
 
-# How To Use
+## 3. Usecase → Business Logic
 
-Start a conversation with your AI agent.
+This is the center of the system.
 
-## Example 1 — Create a New Service
-
-Prompt:
+Example:
 
 ```text
-Using golang-clean-architecture skill:
-
-Create a Customer service.
-
-Requirements:
-- CRUD endpoints
-- Postgres repository
-- Event on customer creation
-- Unit + integration tests
+Create Customer
+↓
+Validate
+↓
+Persist
+↓
+Publish Event
 ```
 
-Generated output:
+Responsibilities:
 
-```text
-internal/domain/customer.go
+* Validation
+* Business rules
+* Orchestration
+* Event publishing
 
-internal/repository/customer/
-internal/usecase/customer/
-internal/api/http/customer/
+Rules:
 
-internal/events/customercreated.go
-```
+✅ Talks to interfaces
+❌ Talks directly to DB
+❌ Imports HTTP framework
 
-Everything follows dependency rules automatically.
+Think of this as:
+
+> "What the application does."
 
 ---
 
-## Example 2 — Add Feature
+## 4. Handler → Transport Layer
 
-Prompt:
+Handler converts HTTP into usecase calls.
 
-```text
-Using golang-clean-architecture skill:
-
-Add Invoice entity.
-
-Requirements:
-- Create invoice
-- List invoices
-- Publish InvoiceCreated event
-```
-
-Generated:
+Example:
 
 ```text
-domain/invoice.go
-
-repository/invoice/
-
-usecase/invoice/
-
-api/http/invoice/
+POST /customers
+↓
+Parse JSON
+↓
+Call usecase
+↓
+Return response
 ```
 
-No manual architecture decisions.
+Responsibilities:
+
+* Parse requests
+* Validate input
+* Serialize response
+
+Rules:
+
+✅ Knows HTTP
+❌ Knows repository
+❌ Contains business logic
+
+Think of this as:
+
+> "How users interact."
 
 ---
 
-## Example 3 — Refactor Existing Project
+## 5. Events → Async Processing
 
-Prompt:
+Mutations can emit events.
+
+Example:
 
 ```text
-Using golang-clean-architecture skill:
-
-Move billing logic from handlers
-into usecases.
-
-Remove repository access from HTTP layer.
-Generate tests.
+Customer Created
+↓
+Broker.Publish()
+↓
+Analytics
+↓
+Notifications
+↓
+Read Models
 ```
 
-Skill will:
+Benefits:
 
-✅ Detect architecture violations
-✅ Move logic to correct layer
-✅ Regenerate interfaces
-✅ Update dependency wiring
+* Decoupled workflows
+* Async side effects
+* Easier scaling
 
 ---
 
-# What The Skill Enforces
+# Dependency Direction
 
-## Domain
-
-```text
-Pure business objects
-No framework imports
-```
-
-## Repository
-
-```text
-Persistence only
-```
-
-## Usecase
-
-```text
-Business rules
-Event publishing
-```
-
-## Handler
-
-```text
-HTTP transport only
-```
-
-Dependencies:
+Dependencies always move inward.
 
 ```text
 handler
@@ -188,68 +241,34 @@ repository
 domain
 ```
 
----
-
-# Example Workflow
-
-Developer:
+Never:
 
 ```text
-Add Customer feature
-```
-
-↓
-
-AI:
-
-```text
-Generate domain
-Generate repository
-Generate usecase
-Generate handler
-Generate tests
-Wire main.go
-```
-
-↓
-
-Developer:
-
-```text
-Review
-Adjust business rules
-Merge
+handler → repository ❌
+usecase → gin ❌
+domain → gorm ❌
 ```
 
 ---
 
-# Validation
+# Why This Architecture Scales
 
-Before completing generation, the skill verifies:
+Small project:
 
-* No circular imports
-* Constructor injection
-* Interface contracts
-* Mock generation
-* Test coverage
-* Event consistency
+```text
+1 entity
+few files
+```
 
----
+Large project:
 
-# Why Use It
+```text
+50 entities
+same rules
+same structure
+same developer experience
+```
 
-You focus on:
+AI generates code.
 
-✔ Business logic
-✔ Product requirements
-
-The skill handles:
-
-✔ Project structure
-✔ Layer boundaries
-✔ Boilerplate generation
-✔ Consistency
-
----
-
-⭐ If useful, give the repo a star.
+Architecture keeps it maintainable.
