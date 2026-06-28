@@ -7,9 +7,10 @@ git clone https://github.com/<your-user>/golang-clean-architecture.git
 Add the skill to your AI coding environment.
 
 Example:
-
+```text
 .skills/
 └── golang-clean-architecture/
+```
 
 # 🏗️ Generated Architecture
 
