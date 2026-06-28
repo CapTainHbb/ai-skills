@@ -1,4 +1,4 @@
-Install Skill
+# Install Skill
 
 Clone repository:
 
