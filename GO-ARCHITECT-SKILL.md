@@ -1,622 +1,448 @@
 ---
-name: golang-clean-architecture
-description: Generate and maintain Go services following Clean Architecture conventions.
-compatibility: opencode
+name: architect
+description: Reference for working inside the captain-backend (financial-account) Go codebase. Use when designing, adding, or modifying features — usecases, HTTP handlers, repositories, domain models, events, error handling, translation (en/fa), testing, logging, and resilience/failover patterns. Explains how the project actually does things.
 ---
 
-# Go Clean Architecture Skill
+# Architect — captain-backend conventions
 
-## Purpose
+This skill documents how this repository is actually built, so new code looks like
+existing code. Follow these patterns when adding or changing anything.
 
-Automatically generate new features and enforce architectural consistency across Go backend services following a Clean/Onion Architecture with strict layering, interface-based dependency injection, and event-driven projection patterns.
-
----
-
-## Architecture Principles
-
-1. **Dependency Inversion** — High-level modules (handlers, usecases) depend on abstractions (interfaces), not concrete implementations.
-2. **Strict Inward Dependency** — Dependencies flow: `handler → usecase → repository → domain`. Never outward.
-3. **Domain Purity** — The domain layer imports **nothing** outside the Go standard library.
-4. **Encapsulation** — Only interfaces are exported; implementations, constructors, and tests stay in the same package.
-5. **Interface at Point of Use** — Each layer defines the interface it needs, not what the lower layer provides.
-6. **Constructor Injection** — All dependencies are passed explicitly via constructor functions — no global state, no service locators.
-7. **Eventual Consistency** — Side effects are published as events on an in-memory broker; projections subscribe and process asynchronously.
-8. **Single Responsibility** — One domain entity → one usecase package → one repository package → one handler package.
+Module: `github.com/accounting-module/financial-account`. Go 1.26, Gin, GORM + Postgres,
+slog logging, Go-channel event broker.
 
 ---
 
-## Layer Responsibilities
+## 1. Layering and dependency direction
 
-### Domain (`internal/domain/`)
-
-**What lives here:** Pure business entities, value objects, constants, enums.
-
-**Rules:**
-- Structs with exported fields only. No methods beyond simple constructors.
-- No JSON, YAML, GORM, or any serialization tags.
-- No imports beyond `"time"`, `"math"`, stdlib.
-- Constants for status values, types, and enum-like string literals.
-- Config structs (loaded from YAML/env) are defined here.
-
-**Template:**
-```go
-package domain
-
-type Entity struct {
-    ID   uint
-    Name string
-}
+```
+handler (internal/api/http/<entity>)        → depends on usecase interfaces
+usecase (internal/usecase/<entity>)         → depends on repository interfaces, other usecase interfaces, events, broker
+repository (internal/repository/<entity>)   → depends on domain + GORM
+domain (internal/domain)                     → pure structs/constants, stdlib only
 ```
 
-### Repository (`internal/repository/<entity>/`)
+- Imports flow **inward only**: `handler → usecase → repository → domain`.
+- Handlers never import `repository/` or `broker` or `events`.
+- Usecases never import `gin`, `gorm`, or a concrete postgres implementation.
+- Domain never imports GORM/gin/broker.
+- Cross-cutting helpers live in `pkg/` (`broker`, `logger`) — imported by any layer.
+- The composition root is `internal/app/app.go` → `Build(deps) *gin.Engine`, shared by
+  `cmd/main/main.go` and `internal/integration` tests. Wire there, not inline in main.
 
-**What lives here:** Data access contracts (interfaces) and Postgres/GORM implementations.
+### Wire order in `internal/app/app.go`
 
-**Files:**
-- `interface.go` — Repository port with `//go:generate mockery` directive
-- `entity.go` — GORM model struct + `ToDomain()` / `FromDomainToEntity()`
-- `dto.go` — Filter structs for query methods
-- `postgres.go` — GORM implementation (unexported struct)
-- `postgres_test.go` — Integration tests (testcontainers)
-- `mocks/` — Generated mockery mocks
-
-**Rules:**
-- Interface matches domain operations (`GetAll`, `GetByID`, `Create`, `Update`, `Delete`).
-- Implementation is an unexported struct holding `*gorm.DB`.
-- Constructor returns the interface: `func NewXPostgres(db *gorm.DB) XRepository`.
-- `GetAll` returns `([]domain.X, int64, error)` — data + total count.
-- Entity struct embeds `gorm.Model`.
-- `ToDomain()` converts GORM entity → domain model.
-- `FromDomainToEntity()` converts domain model → GORM entity.
-- Filters are exported structs with slice/pointer fields for optional query params.
-
-**Allowed imports:** `domain`, `context`, `gorm.io/gorm`, `gorm.io/driver/postgres`
-**Forbidden imports:** `gin`, `broker`, `events`, other repositories, other usecases
-
-### Use Case (`internal/usecase/<entity>/`)
-
-**What lives here:** Business logic, validation, orchestration, event publishing.
-
-**Files:**
-- `crud.go` — Interface + implementation (can be named descriptively e.g. `billing.go`)
-- `dto.go` — Usecase-specific filter/request types
-- `*_test.go` — Unit tests with mocked repository
-- `errors.go` — Sentinel errors (optional)
-- `mocks/` — Generated mockery mocks
-
-**Rules:**
-- Interface methods mirror business capabilities, not CRUD necessarily.
-- Implementation struct holds repository interface(s) + other usecase interfaces.
-- Constructor takes dependencies, returns interface: `func NewX(repo XRepository, broker broker.Broker) XUsecase`.
-- Business validation happens here before calling repository.
-- Events are published after successful mutations via `eventBroker.Publish(...)`.
-- Filter DTOs defined here, converted to repo-level filter DTOs inside the method.
-- For event consumers: `ProcessEvents(ctx)` subscribes to broker and type-switches.
-
-**Allowed imports:** `domain`, other `usecase/<entity>` (interfaces), `repository/<entity>` (interfaces), `events`, `broker`, `context`
-**Forbidden imports:** `gin`, `gorm`, `repository/<entity>` (concrete postgres implementation)
-
-### HTTP Handler (`internal/api/http/<entity>/`)
-
-**What lives here:** HTTP transport — parse requests, call usecases, serialize responses.
-
-**Files:**
-- `handler.go` — Handler struct + `RegisterRoutes()` + HTTP method handlers
-- `dto.go` — Request/Response structs with JSON tags + `FromDomainToResponse()`
-
-**Rules:**
-- Handler struct holds usecase interface(s).
-- `NewHandler(usecase XUsecase) *Handler` constructor.
-- `RegisterRoutes(router gin.IRouter)` registers a group with route methods.
-- Swagger annotations on each handler method.
-- Request validation via `c.ShouldBindJSON(&req)` with Gin binding tags.
-- Pagination via `limit`/`offset` query parameters.
-- Response structs have `json:"..."` tags.
-- `ErrorResponse` struct with `Error string \`json:"error"\``.
-- `FromDomainToResponse([]domain.X) []XResponse` helper function.
-- ID parsing: `strconv.ParseUint(c.Param("id"), 10, 64)`.
-
-**Allowed imports:** `domain`, `usecase/<entity>`, `gin`, `strconv`, `net/http`, `log`
-**Forbidden imports:** `repository`, `gorm`, `broker`, `events`
-
-### Events (`internal/events/`)
-
-**What lives here:** Event type definitions for the async event bus.
-
-**Conventions:**
-- One file per event: `accountgroupcreated.go`, `journalentryposted.go`, etc.
-- Each event struct carries the relevant domain entity.
-- `New*()` constructor returns the `Event` interface.
-- Event type constant: `EventX = "x_created"`.
-
-**Template:**
-```go
-package events
-
-import "github.com/<module>/internal/domain"
-
-const EventEntityCreated = "entity_created"
-
-type EntityCreated struct {
-    Entity domain.Entity
-}
-
-func NewEntityCreated(entity domain.Entity) Event {
-    return EntityCreated{Entity: entity}
-}
-
-func (e EntityCreated) EventType() string             { return EventEntityCreated }
-func (e EntityCreated) GetEventData() interface{}     { return e.Entity }
-```
-
-### Event Broker (`pkg/broker/`)
-
-**What lives here:** In-memory Go channel pub/sub broker.
-
-**Interface:**
-```go
-type Broker interface {
-    Subscribe() chan events.Event
-    Unsubscribe(ch chan events.Event)
-    Publish(msg events.Event)
-}
-```
+repos → usecases → handlers → `RegisterRoutes(router)`. Event consumers and periodic
+fetchers are launched as goroutines: `go uc.ProcessEvents(ctx)` / `go uc.StartPeriodicFetch(ctx)`.
 
 ---
 
-## Directory Conventions
+## 2. Domain (`internal/domain/`)
 
-### Standard Project Layout
-
-```
-cmd/
-    main/
-        main.go              # Entrypoint, DI wiring, startup
-    utils/
-        main.go              # CLI tools (cobra-based migration, seeding)
-internal/
-    api/
-        http/
-            router.go        # NewRouter(cfg) returns *gin.Engine
-            <entity>/
-                handler.go   # RegisterRoutes, HTTP methods
-                dto.go       # Request/Response structs
-    config/
-        loader.go            # Load(path) reads YAML + env overrides
-    domain/
-        entity.go            # Pure domain structs + constants
-        config.go            # Config struct
-    events/
-        interface.go         # Event interface
-        entitycreated.go     # One event type per file
-    middleware/
-        authrequired.go      # JWT validation middleware
-        requirepermission.go # RBAC middleware
-    repository/
-        <entity>/
-            interface.go     # Repository contract
-            entity.go        # GORM model + mapping
-            dto.go           # Filter structs
-            postgres.go      # GORM implementation
-            postgres_test.go # Integration tests
-            mocks/           # Generated mocks
-    usecase/
-        <entity>/
-            crud.go          # Interface + implementation
-            dto.go           # Usecase filter structs
-            errors.go        # Sentinel errors (optional)
-            *_test.go        # Unit tests
-            mocks/           # Generated mocks
-    testhelper/
-        testdb.go            # testcontainers singleton DB
-pkg/
-    broker/
-        interface.go         # Broker contract
-        gochannel.go         # In-memory implementation
-migrations/
-    <timestamp>_<name>.up.sql   # One pair per feature
-    <timestamp>_<name>.down.sql
-docs/
-    swagger.json             # Generated swagger (checked in)
-config.yaml                  # Default configuration
-Makefile                     # Build/test/seed commands
-Dockerfile                   # Container build
-go.mod
-```
-
-### Package Naming
-
-| Layer | Package | Example |
-|---|---|---|
-| Domain | `internal/domain` | `package domain` |
-| Repo | `internal/repository/<entity>` | `package accountgroup` |
-| Usecase | `internal/usecase/<entity>` | `package billing` |
-| Handler | `internal/api/http/<entity>` | `package accountgroup` |
-| Events | `internal/events` | `package events` |
-| Middleware | `internal/middleware` | `package middleware` |
-| Broker | `pkg/broker` | `package broker` |
-
-### Import Aliasing
-
-Always alias imports when the package name doesn't match the last path segment, or when naming conflicts arise:
-```go
-accountgrouprepo "github.com/module/internal/repository/accountgroup"
-accountgroupusecase "github.com/module/internal/usecase/accountgroup"
-```
-
----
-
-## Feature Creation Workflow
-
-When asked to add a new entity `X` to the system, follow this exact workflow:
-
-### Step 1: Domain
-
-Create `internal/domain/<entity>.go`:
+- One file per entity (e.g. `journalentry.go`, `buysellcashdocument.go`).
+- Structs with exported fields only; no JSON/GORM/binding tags; no methods beyond trivial helpers.
+- Enum-like states are `const` string blocks:
 
 ```go
-package domain
-
-type X struct {
-    ID   uint
-    Name string
-    // business fields only — no JSON/GORM tags
-}
-```
-
-Add any constants the entity needs.
-
-### Step 2: Repository Interface + Implementation
-
-Create 4 files under `internal/repository/<entity>/`:
-
-**interface.go:**
-```go
-package x
-
-import (
-    "context"
-    "github.com/module/internal/domain"
+const (
+	JournalEntryStatusDraft  = "draft"
+	JournalEntryStatusPosted = "posted"
 )
+```
 
-//go:generate mockery --dir . --name=XRepository --output=mocks --outpkg=mocks
-type XRepository interface {
-    GetAll(ctx context.Context, limit, offset int, filters XFilters) ([]domain.X, int64, error)
-    GetByID(ctx context.Context, id uint) (domain.X, error)
-    Create(ctx context.Context, x domain.X) (domain.X, error)
-    Update(ctx context.Context, x domain.X) (domain.X, error)
-    Delete(ctx context.Context, id uint) error
+- Config structs live here too (`config.go`) with `yaml:"..."` tags.
+- `AuthClaims` (from JWT) lives here; `domain.AdminRoleName` gates admin shortcuts.
+
+---
+
+## 3. Repository (`internal/repository/<entity>/`)
+
+Files per entity package: `interface.go`, `entity.go`, `dto.go`, `postgres.go`, `postgres_test.go`, `mocks/`.
+
+- **interface.go** — contract + `//go:generate mockery --name=XRepository --output=mocks --outpkg=mocks`.
+- **entity.go** — GORM model embedding `gorm.Model`, plus `ToDomain()` and `FromDomainToEntity()` /
+  `FromDomain(...)`. Relationships reference other entity GORM structs via `gorm:"foreignKey:..."`.
+- **dto.go** — exported filter structs for query methods; optional filters are slices/pointers.
+- **postgres.go** — unexported impl struct holding `*gorm.DB`; constructor returns the interface:
+  `func NewXPostgres(db *gorm.DB) XRepository`.
+- `GetAll` returns `([]domain.X, int64, error)` — data + **total count**. Count uses a cloned
+  query before `Limit/Offset`: `query.Session(&gorm.Session{})`.
+
+`GetAll` shapes queries with `r.db.WithContext(ctx).Where(...)`, applies optional filters,
+then counts on the clone and pages with `.Limit(limit).Offset(offset)`.
+
+Integration tests (white-box, same package) use `testhelper.SetupDB(t)` + `db.AutoMigrate(...)`
++ `t.Cleanup(func() { testhelper.CleanTables(...) })`.
+
+---
+
+## 4. Usecase (`internal/usecase/<entity>/`)
+
+Files: `crud.go` (or descriptive name), `dto.go`, `error.go`, `*_test.go`, `mocks/`.
+
+- Interface named `XUsecase` / `CRUDUsecase` with the `//go:generate mockery` directive.
+- Impl struct holds **interfaces** (repo, other usecases, `broker.Broker`, `idvalidator.IDValidator`).
+- Constructor injects dependencies and returns the interface.
+- **Business validation happens first** (`validateDocument`), returning sentinel errors.
+- Mutations that post to the ledger: `Create` doc → build `domain.JournalEntry` → call
+  `journalEntryCrudUsecase.Create` )→ **compensating rollback if it fails** → publish event →
+  `eventCRUDUsecase.RecordEvent(...)` for audit. Mirror this shadow flow.
+- `Update` = `Revert` (reversing entry) then `Create`; roll back the reversing entry if create fails.
+- Filter DTOs are usecase-owned and converted to repo DTOs inside the method (`GetAll`).
+- Log via `logger.FromContext(ctx)` (never the global), so `request_id` attaches.
+
+### Event consumers
+
+Consumers (`runningbalance`, `generalledger`, `billing`, `documentgroupcleanup`) implement
+`ProcessEvents(ctx)`:
+
+```go
+ch := u.broker.Subscribe()
+defer u.broker.Unsubscribe(ch)
+for {
+	select {
+	case event := <-ch:
+		eventCtx := ctx
+		if cid := event.GetCorrelationID(); cid != "" {
+			eventCtx = logger.ContextWithRequestID(ctx, cid)
+		}
+		switch event.EventType() {
+		case events.EventJournalEntryPosted:
+			je, ok := event.GetEventData().(domain.JournalEntry)
+			if !ok {
+				logger.FromContext(eventCtx).Error("failed to cast event ...")
+				break
+			}
+			u.handleJournalEntryPosted(eventCtx, &je)
+		...
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 ```
 
-**entity.go:**
-```go
-package x
+Type-switch on `EventType()`, cast data with the `ok, ok :=` guard, log on cast failure,
+and **log-and-continue on handler errors** (never panic/stop the consumer loop).
 
-import (
-    "github.com/module/internal/domain"
-    "gorm.io/gorm"
+---
+
+## 5. Events (`internal/events/`)
+
+- One file per event. Every event implements the `events.Event` interface:
+  `EventType() string`, `GetEventData() interface{}`, `GetCorrelationID() string`.
+- Constructor returns `Event` and takes `correlationID string` (from `logger.RequestIDFromContext(ctx)`)
+  so async consumers can thread the request id into their logs:
+
+```go
+const EventJournalEntryPosted = "journal_entry_posted"
+
+type JournalEntryPosted struct {
+	CorrelationID string
+	JournalEntry  domain.JournalEntry
+}
+
+func NewJournalEntryPosted(correlationID string, j domain.JournalEntry) Event {
+	return JournalEntryPosted{CorrelationID: correlationID, JournalEntry: j}
+}
+```
+
+- Event constants are lowercase snake_case (`journal_entry_posted`, `buy_sell_cash_document_deleted`).
+- Broker (`pkg/broker`): in-memory pub/sub. `Subscribe() chan events.Event`,
+  `Unsubscribe(ch)`, `Publish(msg events.Event)`. Events are fire-and-forget.
+- Audit trail uses `eventusecase.CRUDUsecase.RecordEvent(ctx, eventType, entityType, entityID,
+  oldData, newData, metadata)` which JSON-serializes payloads into the `events` table. These
+  are **also** recorded on mutations, alongside published events.
+
+---
+
+## 6. Error handling
+
+Three-layer pattern:
+
+1. **Usecase** defines sentinel errors in `error.go`:
+
+```go
+var (
+	ErrInvalidTradeType   = errors.New("trade type must be 'buy' or 'sell'")
+	ErrUnbalancedJournalEntry = errors.New("unbalanced journal entry")
+	...
 )
+```
 
-type X struct {
-    gorm.Model
-    Name string `gorm:"not null"`
-}
+2. **Handler** maps sentinels → (HTTP status, message code) with `translateErrorToCode`:
 
-func (e *X) ToDomain() domain.X {
-    return domain.X{ID: e.ID, Name: e.Name}
-}
-
-func FromDomainToEntity(d *domain.X) X {
-    return X{Model: gorm.Model{ID: d.ID}, Name: d.Name}
+```go
+func translateErrorToCode(err error) (int, string) {
+	switch {
+	case errors.Is(err, buysellcashusecase.ErrInvalidTradeType):
+		return http.StatusBadRequest, INVALID_TRADE_TYPE
+	...
+	default:
+		return http.StatusInternalServerError, INTERNAL_SERVER_ERROR
+	}
 }
 ```
 
-**dto.go:** Filter struct with optional fields as slices/pointers.
+Always use `errors.Is`, never typed assertions; default is `500 + INTERNAL_SERVER_ERROR`.
 
-**postgres.go:** Unexported struct + constructor implementing interface.
+3. **Handler** responds via `writeError(c, status, code)` (see Translation below).
 
-### Step 3: Usecase
+Other conventions:
 
-Create files under `internal/usecase/<entity>/`:
+- Rollback/compensation failures combine errors with `errors.Join(err, delErr)`.
+- Lookup fallbacks log a `Warn` and return `nil` instead of failing (e.g. missing
+  "Foreign Exchange Gain/Loss" accounts skip FX lines).
+- Repository errors are returned as-is (no wrapping) and bubble to the usecase.
+- Non-error parser failures (bad JSON body) log the raw error and return a localized code:
 
 ```go
-package x
-
-//go:generate mockery --name=XUsecase --output=mocks --outpkg=mocks
-type XUsecase interface {
-    GetAll(ctx context.Context, limit, offset int, filters GetXFilters) ([]domain.X, int64, error)
-    GetByID(ctx context.Context, id uint) (domain.X, error)
-    Create(ctx context.Context, x domain.X) (domain.X, error)
-    Update(ctx context.Context, x domain.X) (domain.X, error)
-    Delete(ctx context.Context, id uint) error
-}
-
-type xUsecase struct {
-    repo        xRepo.XRepository
-    eventBroker broker.Broker
-}
-
-func NewXUsecase(repo xRepo.XRepository, eventBroker broker.Broker) XUsecase {
-    return &xUsecase{repo: repo, eventBroker: eventBroker}
+if err := c.ShouldBindJSON(&request); err != nil {
+	logger.FromContext(c.Request.Context()).Error("invalid json body", "error", err)
+	writeError(c, http.StatusBadRequest, INVALID_REQUEST)
+	return
 }
 ```
 
-If the mutation should trigger side effects, publish an event:
+Status codes in use: 400 (bad input/id bind), 401 (auth), 403 (RBAC), 404 (not found when
+`doc.ID == 0` after a successful fetch), 409 avoided, 429 (rate limit), 500.
+
+---
+
+## 7. Translation (en/fa)
+
+- **Locale resolution**: `internal/middleware/locale.go`. Priority:
+  1. `Language` header
+  2. `Accept-Language`
+  3. default `"en"` (`fa*` prefix → fa, otherwise en).
+  The resolved locale is set on the Gin context (`c.Set("locale", locale)`) and echoed back
+  in the `Language` response header.
+- **Per-handler-package message map**, keyed by snake_case code constants:
+
 ```go
-func (u *xUsecase) Create(ctx context.Context, x domain.X) (domain.X, error) {
-    created, err := u.repo.Create(ctx, x)
-    if err != nil {
-        return domain.X{}, err
-    }
-    u.eventBroker.Publish(events.NewXCreated(created))
-    return created, nil
+const INVALID_LIMIT = "invalid_limit"
+
+var errorMessages = map[string]map[string]string{
+	INVALID_LIMIT: {"en": "Invalid limit", "fa": "محدوده نامعتبر است"},
+}
+
+func writeError(c *gin.Context, status int, code string) {
+	locale, _ := c.Get("locale")
+	lang, ok := locale.(string)
+	if !ok || lang == "" {
+		lang = "en"
+	}
+	msg := errorMessages[code][lang]
+	if msg == "" {
+		msg = errorMessages[code]["en"] // always fall back to English
+	}
+	c.JSON(status, ErrorResponse{Code: code, Message: msg})
 }
 ```
 
-### Step 4: Migration
+- The response shape is always `{"code": "...", "message": "..."}` via the handler's own
+  `ErrorResponse` struct (defined per handler `dto.go`).
+- Message codes live in `internal/api/http/<entity>/error.go`. Translation lives with the
+  handler, not in the usecase layer. Do not translate inside usecases.
 
-Create `migrations/<timestamp>_add_x.up.sql` and `<timestamp>_add_x.down.sql` with the new table, foreign keys, and indexes. Follow existing migration naming.
+---
 
-### Step 5: Event (if needed)
+## 8. HTTP handlers (`internal/api/http/<entity>/`)
 
-Create `internal/events/xcreated.go`.
+`handler.go`, `dto.go`, `error.go` (+ shared router).
 
-### Step 6: HTTP Handler
-
-Create files under `internal/api/http/<entity>/`:
+- Handler struct holds **usecase interfaces + policyEnforcer + claimUsecase**:
 
 ```go
-package x
-
 type Handler struct {
-    usecase xUsecase.XUsecase
-}
-
-func NewHandler(usecase xUsecase.XUsecase) *Handler {
-    return &Handler{usecase: usecase}
-}
-
-func (h *Handler) RegisterRoutes(router gin.IRouter) {
-    g := router.Group("/xs")
-    g.GET("/", h.GetAll)
-    g.GET("/:id", h.GetByID)
-    g.POST("/", h.Create)
-    g.PUT("/:id", h.Update)
-    g.DELETE("/:id", h.Delete)
+	crudUsecase    buysellcashusecase.CRUDUsecase
+	policyEnforcer policyusecase.PolicyEnforcer
+	claimUsecase   authusecase.ClaimUsecase
 }
 ```
 
-Include swagger annotations (`@Summary`, `@Param`, `@Success`, `@Router`) on each method.
-
-### Step 7: Wire in `cmd/main/main.go`
-
-```go
-xRepo := xRepo.NewXPostgres(db)
-xUsecase := xUsecase.NewXUsecase(xRepo, eventBroker)
-xHandler := x.NewHandler(xUsecase)
-xHandler.RegisterRoutes(router)
-```
-
-### Step 8: Tests
-
-- `internal/usecase/<entity>/crud_test.go` — Unit tests with mockery mocks
-- `internal/repository/<entity>/postgres_test.go` — Integration tests with testcontainers
-
----
-
-## Rules for Adding Packages
-
-### Adding a new entity (e.g., "Invoice")
-
-1. Create exactly: `domain/invoice.go`, `repository/invoice/{interface,entity,dto,postgres}.go`, `usecase/invoice/crud.go`, `api/http/invoice/{handler,dto}.go`
-2. Create migration files `migrations/<timestamp>_add_invoice.{up,down}.sql`
-3. Wire in `main.go` following existing patterns
-4. Each new package must be in its own directory (no putting multiple entities in one package)
-
-### Adding a new layer to an existing entity
-
-- Never add a file that breaks the dependency direction. E.g., don't import `gin` in a usecase.
-- If you need to expose a new capability, add a method to the relevant interface.
-
-### Adding a cross-cutting concern
-
-- **Middleware**: `internal/middleware/`. Accept usecase interfaces via closure.
-- **Config fields**: Add to `domain.Config` struct + `config.yaml` + `config.Load()`
-- **Event type**: Create `internal/events/<name>.go` + wire event constant into consumer `ProcessEvents()`
-- **Periodic fetcher**: Create `internal/usecase/<entity>/sheetfetcher.go` with `StartPeriodicFetch(ctx)` method, launch in `main.go`
+- `RegisterRoutes(router gin.IRouter)`:
+  - `group := router.Group("/<plural>")`
+  - `group.Use(middleware.AuthRequired(h.claimUsecase))`
+  - Each route wrapped in `middleware.Authorize(h.policyEnforcer, policyusecase.ObjectTypeX,
+    policyusecase.ActionY, resourceIDFunc)` — pass `nil` for collection endpoints; pass a func
+    returning the path id for per-resource endpoints.
+  - **Order matters in gin**: static routes before `/:id` — e.g. `GET /latest-id` before `GET /:id`.
+- Swagger annotations (`@Summary`, `@Security Bearer`, `@Tags`, `@Param`, `@Success`,
+  `@Failure {object} ErrorResponse`, `@Router`) on every method. Regenerate docs with `make swagger`.
+- **Pagination**: parse `limit`/`offset` manually with `strconv.Atoi`, defaults `100`/`0`,
+  invalid values → `400 INVALID_LIMIT` / `INVALID_OFFSET`.
+- ID parsing: `strconv.Atoi(c.Param("id"))` → `400 INVALID_ID`; response to userID from
+  `c.Get("userID")` (a string set by `AuthRequired`); convert with `strconv.Atoi`.
+- Request binding: `c.ShouldBindJSON(&req)` → `400 INVALID_REQUEST`; mutations then call the
+  usecase and map errors through `translateErrorToCode`.
+- Responses: `c.JSON(http.StatusOK, buildXToResponse(doc))`; slice conversion helper
+  `func xToResponse(d domain.X) XResponse` (and loop at call site); mutations return 201 Created,
+  deletes 204 No Content.
+- Middleware chain (global, in `internal/api/http/router.go`): `Recovery` → `RequestID` →
+  `Logging` → `Locale` → CORS. `RequestID` reads/assigns `X-Request-ID` and puts it in ctx;
+  `Logging` logs every request with status/method/path/latency/request_id.
 
 ---
 
-## Rules for Dependency Injection
+## 9. Auth, RBAC, and utilities
 
-1. **Manual wiring in main.go** — No DI frameworks (wire, dig, etc.) unless the project explicitly adds one.
-2. **Constructor injection only** — All dependencies are constructor parameters. Never use `init()`, global variables, or `sync.Once` for production dependencies.
-3. **Interface parameters** — Constructors accept interface types, not concrete implementations.
-4. **One instance per dependency** — Share instances by passing them to multiple constructors (e.g., same `eventBroker` to all usecases).
-5. **Order matters** — Wire repos first, then usecases, then handlers, then route registration.
-6. **Feature gating** — Conditionally wire components based on config flags (e.g., `cfg.AgenticModeEnabled`).
-
-```go
-// Correct wiring pattern
-userRepo := userrepo.NewUserPostgres(db)
-userUsecase := userusecase.NewCRUDUsecase(userRepo)
-userHandler := userhandler.NewHandler(userUsecase)
-userHandler.RegisterRoutes(router)
-```
+- `middleware.AuthRequired(claimUsecase)`: validates `Authorization: Bearer <token>`, sets
+  `userID`, `username`, `authClaims` on the Gin context.
+- `middleware.Authorize(...)`: `admin` role bypasses; otherwise policy enforcer checks
+  role/object/action. Returns 401/400/403 on failure.
+- `middleware.AdminRequired()`: role must be `domain.AdminRoleName`.
+- `middleware.LoginRateLimiter`: in-memory per-IP sliding window for `/auth/login`; returns 429.
+- JWT: `authusecase.NewClaimUsecase(cfg.JWTSecret, 24*time.Hour)`; claims carry
+  `Subject` (user id), `Username`, `RoleName`.
+- `idvalidator.IDValidator` (`internal/usecase/idvalidator/`): a shared service used by
+  usecases to verify foreign keys (account group, currency, financial account) belong to
+  `ServiceTypeX` constants; returns descriptive wrap errors.
+- Policy domain: objects/actions/`Enforce(role, user, objType, objID, act)`; default policies
+  and roles are seeded at startup (`SeedDefaults`).
+- `cmd/utils/` (cobra): `add-admin`, `migrate`, `seed-*`, `replay-events`. Known limitation:
+  utils bypass usecases, so seeding does not publish events — the GL startup reconciliation
+  covers that (see Failover).
 
 ---
 
-## Testing Conventions
+## 10. Logging (`pkg/logger`)
 
-### Unit Tests (usecases)
+- slog wrapper. `logger.Init(level, format)` where format ∈ `text` (default) | `json` | `color`.
+- `logger.FromContext(ctx)` returns the request logger, always attaching `request_id` when
+  present. **Prefer `logger.FromContext(ctx)` over `logger.Info`/`logger.Error`** inside
+  request-scoped code (handlers, usecases, consumers).
+- Attrs are key/value pairs: `logger.FromContext(ctx).Error("msg", "error", err, "id", id)`.
+- `logger.Fatal / FatalErr` for startup failures (config/db/planner), `logger.Warn` for
+  fallbacks and config defaults.
+- `logger.ContextWithRequestID` / `logger.RequestIDFromContext` are used to propagate the id
+  onto event consumer contexts.
+
+---
+
+## 11. Testing
+
+### Regenerating mocks
+
+After adding/changing any interface with the mockery directive:
+`go generate ./...` (which runs the `//go:generate mockery` comments).
+
+### Unit tests (usecases) — `internal/usecase/<entity>/..._test.go`
+
+Pattern:
 
 ```go
-package x_test // external test package
-
 func newUsecase(repo *repoMocks.XRepository, broker broker.Broker) x.XUsecase {
-    return x.NewXUsecase(repo, broker)
+	return x.NewXUsecase(repo, broker)
 }
 
 func TestCreate_Success(t *testing.T) {
-    mockRepo := new(repoMocks.XRepository)
-    uc := newUsecase(mockRepo, broker.NewGoChannelBroker())
-
-    expected := domain.X{ID: 1, Name: "test"}
-    mockRepo.On("Create", mock.Anything, mock.Anything).Return(expected, nil)
-
-    result, err := uc.Create(context.Background(), domain.X{Name: "test"})
-    require.NoError(t, err)
-    assert.Equal(t, "test", result.Name)
-    mockRepo.AssertExpectations(t)
+	mockRepo := new(repoMocks.XRepository)
+	uc := newUsecase(mockRepo, broker.NewGoChannelBroker())
+	expected := domain.X{ID: 1, Name: "test"}
+	mockRepo.On("Create", mock.Anything, mock.Anything).Return(expected, nil)
+	result, err := uc.Create(context.Background(), domain.X{Name: "test"})
+	require.NoError(t, err)
+	assert.Equal(t, "test", result.Name)
+	mockRepo.AssertExpectations(t)
 }
 ```
 
-**Patterns:**
-- `mock.Anything` for context
-- `mock.MatchedBy(func(T) bool)` for complex matchers
-- `require.NoError` / `require.Error` for error checking
-- `assert.Equal` / `assert.Len` for value assertions
-- `mock.AssertExpectations(t)` to verify all expected calls happened
-- Use `newUsecase()` helper to reduce boilerplate
+Rules: external test package `X_test`; `mock.Anything` for ctx; `mock.MatchedBy` for complex
+matchers; `require./assert.` from testify; verify expectations. Broker can be a real
+`broker.NewGoChannelBroker()`.
 
-### Integration Tests (repositories)
+### Repository integration — `internal/repository/<entity>/postgres_test.go`
 
-```go
-package x // same package as implementation (white-box)
+White-box, testcontainers:
+`db := testhelper.SetupDB(t)`, `db.AutoMigrate(&X{})`, `t.Cleanup(func() { testhelper.CleanTables(t, db, "xs") })`.
+Docker required: tests panic if the container is unavailable.
 
-func setupRepo(t *testing.T) XRepository {
-    t.Helper()
-    db := testhelper.SetupDB(t)
-    require.NoError(t, db.AutoMigrate(&X{}))
-    t.Cleanup(func() { testhelper.CleanTables(t, db, "xs") })
-    return NewXPostgres(db)
-}
+### Full-stack integration — `internal/integration/`
 
-func TestCreateAndGetByID(t *testing.T) {
-    repo := setupRepo(t)
-    created, err := repo.Create(context.Background(), domain.X{Name: "test"})
-    require.NoError(t, err)
-    require.NotZero(t, created.ID)
+`newTestEnv(t)` wires the entire real stack via `app.Build` (real Postgres + migrations +
+router + event consumers). Exercise HTTP with the returned `*gin.Engine`, assert on the DB,
+and `t.Cleanup(env.cleanup)` which cancels consumers + truncates tables in FK order.
 
-    got, err := repo.GetByID(context.Background(), created.ID)
-    require.NoError(t, err)
-    require.Equal(t, created.ID, got.ID)
-}
-```
+### Commands
 
-### Test Infrastructure
+| Scope | Command |
+|---|---|
+| Unit only (no docker) | `go test ./internal/usecase/...` |
+| One repo | `go test ./internal/repository/accountgroup/...` |
+| All | `go test ./...` (Docker required) |
+| Static | `go vet ./...` and `staticcheck ./...` |
 
-- `testhelper.SetupDB(t)` returns a shared Postgres container via `sync.Once`
-- `testhelper.CleanTables(t, db, "table1", "table2")` truncates tables in order
-- Use `go test ./...` for all tests, `go test ./internal/usecase/...` for unit only
+CI order: `gofmt` → `go test ./...` → `go vet ./...` → `staticcheck ./...`.
 
 ---
 
-## Refactoring Rules
+## 12. Failover / resilience patterns
 
-### When to extract a usecase
+There is no generic retry/circuit-breaker layer — resilience is baked into the domain flow:
 
-If a `handler.go`, `crud.go`, or `postgres.go` exceeds ~300 lines, or handles more than one clear responsibility, extract.
-
-**Signs of needed extraction:**
-- A usecase imports more than 5 different repository/usecase interfaces
-- A repository has >10 methods
-- A handler has >6 route handlers
-- Comment blocks like `// -- Billing --` sectioning within a single file
-
-### How to rename an entity
-
-1. Rename domain struct + file
-2. Rename repository directory + all files within (interface, entity, dto, postgres)
-3. Rename usecase directory + all files within
-4. Rename handler directory + all files within
-5. Update all imports across the codebase
-6. Regenerate mocks: `go generate ./...`
-7. Update tests
-8. Update wire-up in `cmd/main/main.go`
-
-### When to add an event
-
-Add a new event type when:
-- A usecase mutation needs to trigger updates in 2+ other usecases
-- A new projection/view needs to react to existing mutations
+- **Startup reconciliation safety net**: GL usecase runs `ReconcileInitialEntries` before
+  `ProcessEvents`; it scans existing account groups/financial accounts and creates missing
+  initial GL entries (`date_timestamp=0`) — covers entities seeded by `cmd/utils` that never
+  emitted events.
+- **Compensating rollback**: document `Create` deletes the created document if journal-entry
+  creation fails; `Revert` restores line type to `posted` and deletes the reversing entry if
+  persistence fails. Failing side-effects are rolled back best-effort and reported with
+  `errors.Join`. Always mirror this ordering when adding new mutations.
+- **Async consumers are isolated**: `ProcessEvents` handlers log errors and **continue** the
+  loop; a failed projection does not take down the process. Consumers stop only on `ctx.Done()`.
+- **Optional-dependency fallback**: missing lookup data degrades gracefully with a `Warn`
+  (e.g. FX gain/loss account absent → cost/interest lines skipped).
+- **Config fallback chain**: env (`DATABASE_URL`, `JWT_SECRET`, `AI_API_KEY`, `LOG_LEVEL`,
+  `LOG_FORMAT`) → `config.yaml` → hardcoded defaults. Required secrets (`JWT_SECRET`,
+  `AI_API_KEY` when agentic mode on) panic at startup rather than run insecure.
+- **Translation fallback**: unknown/absent message codes fall back to the English entry.
+- **Locale fallback**: no header → `"en"`.
+- **Event correlation**: request ids ride along on events and are re-attached to consumer
+  contexts, so a failed async projection is traceable back to the originating request.
+- **Periodic fetchers**: started only when config provides a sheet id; fetch errors are logged
+  and the ticker continues.
 
 ---
 
-## Validation Checklist
+## 13. Things I noticed while reading the code
 
-Use this checklist when reviewing any new code generated within this architecture.
-
-### All Layers
-- [ ] No circular imports
-- [ ] No unused imports
-- [ ] `go vet ./...` passes
-- [ ] `staticcheck ./...` passes
-- [ ] Mockery directives present on all interfaces
-- [ ] Tests compile and pass
-
-### Domain
-- [ ] No imports outside stdlib
-- [ ] No JSON/GORM tags
-- [ ] No logic methods (pure data structs)
-- [ ] All fields exported
-
-### Repository
-- [ ] Interface defined with `//go:generate mockery`
-- [ ] Implementation struct unexported
-- [ ] Constructor returns interface
-- [ ] `ToDomain()` / `FromDomainToEntity()` methods exist
-- [ ] `GetAll` returns data + total count
-- [ ] Integration test covers CRUD operations
-- [ ] No `events` or `broker` imports
-
-### Usecase
-- [ ] Interface defined with `//go:generate mockery`
-- [ ] Implementation struct unexported
-- [ ] Dependencies received via constructor
-- [ ] Business validation before persistence
-- [ ] Events published after successful mutations
-- [ ] Filter DTOs converted to repo filter DTOs internally
-- [ ] Unit tests cover success + error cases
-- [ ] No `gin` or HTTP-related imports
-- [ ] No direct GORM usage
-
-### Handler
-- [ ] Swagger annotations present on all endpoints
-- [ ] `RegisterRoutes` method exists
-- [ ] Request validation via `ShouldBindJSON` or query parsing
-- [ ] Pagination: `limit`/`offset` with defaults
-- [ ] Standard error response format
-- [ ] `FromDomainToResponse` helper for slice conversions
-- [ ] No repository or broker imports
-
-### Migrations
-- [ ] Up migration creates table with all columns, foreign keys, and indexes
-- [ ] Down migration drops table (safe reverse order if dependencies exist)
-- [ ] Migration timestamp matches feature order (newer > older)
-
-### Main Wiring
-- [ ] All dependencies explicitly constructed in order
-- [ ] Event consumers launched as goroutines: `go usecase.ProcessEvents(ctx)`
-- [ ] Periodic fetchers launched as goroutines: `go usecase.StartPeriodicFetch(ctx)`
-- [ ] Initial reconciliation called before starting server (if applicable)
-- [ ] Fetchers gated behind config checks
+- **Document ↔ JournalEntry shadowing**: documents are write-append-only; journal entries are
+  the source of truth for balances. Never edit a posted journal entry in place; post a
+  reversing entry (`JournalEntryLineTypeReverting`) and re-create. A "delete" is `Revert` +
+  `Delete`, always returning the reversal entry.
+- **Balanced-entry invariant** in `journalentry` usecase: ≥2 lines, non-negative debits/credits,
+  `totalDebit == totalCredit`, non-zero totals, currency + financial account validated through
+  `idValidator`.
+- **Ledger entry uniqueness**: `general_ledger_entries` has a unique on
+  `(account_id, type, date_timestamp)`; `id` doubles as the account id set in
+  `CreateNewLedgerEntry`.
+- **Entity naming/aliasing**: repositories/usecases are imported with aliases like
+  `buysellcashrepo`, `buysellcashusecase`, `journalentrycrudusecase`. Follow this.
+- **Package naming**: each entity owns `domain/<entity>.go`, `repository/<entity>/`,
+  `usecase/<entity>/`, `api/http/<entity>/`, `events/<event>.go`. One entity per directory.
+- **Feature gating**: agentic AI wiring (`internal/usecase/agentplanner|agentorchestrator|agentexecuter`)
+  is constructed only when `cfg.AgenticModeEnabled`; planner chosen by `cfg.AIModel`
+  (`deepseek`/`groq`/`avalai`, default OpenAI `gpt-4o-mini`); executor audits every action to
+  `agent_audits`.
+- **Config**: do not commit a real `AI_API_KEY`. Use env overrides.
+- **`config.yaml`/model notes**: keep fmt with `gofmt`; no `init()` side effects for production
+  dependencies (the logger global is the one exception); constructor injection only.
 
 ---
 
-## Anti-Pattern Detection
+## 14. Adding a new entity — checklist
 
-| Anti-Pattern | Detection | Fix |
-|---|---|---|
-| Handler imports repository | `grep "repository/" internal/api/http/` | Move logic to usecase |
-| Usecase imports `gin` | `grep "gin" internal/usecase/` | Remove, handlers handle HTTP concerns |
-| Domain has GORM tags | `grep "gorm:" internal/domain/` | Move GORM model to repository/entity.go |
-| Circular imports | `go test ./...` fails with import cycle | Extract shared interface to usecase |
-| `context.Background()` in usecase/repo | `grep "Background()" internal/` | Accept context from caller |
-| Service locator / global registry | `grep "sync.Once" internal/` (non-test) | Use constructor injection |
-| Repository calling another repository | `grep "repository/" internal/repository/` | Compose at usecase level |
-| Usecase calls `db *gorm.DB` directly | `grep "gorm" internal/usecase/` | Delegate to repository interface |
-| No mockery directive | `grep -L "go:generate mockery" internal/*/interface.go` | Add `//go:generate mockery` line |
-| `init()` functions | `grep "func init()" internal/` | Move to explicit wiring in main.go |
-| DTO duplicated across layers | Compare `dto.go` files across repo vs usecase vs handler | Each layer owns its DTOs |
+1. `internal/domain/<entity>.go` — pure struct + constants.
+2. `internal/repository/<entity>/` — `interface.go` (with mockery directive), `entity.go`
+   (GORM + `ToDomain`/`FromDomain...`), `dto.go` (filters), `postgres.go`, `postgres_test.go`.
+3. `internal/usecase/<entity>/` — `crud.go` (interface + impl), `dto.go`, `error.go`
+   (sentinel errors), `*_test.go`.
+4. Publish events for mutations and attach an audit trail via `eventCRUDUsecase.RecordEvent`
+   when the entity is business data.
+5. `internal/events/<event>.go` if consumers need to react; wire into consumer `ProcessEvents`.
+6. `internal/api/http/<entity>/` — `handler.go` (RegisterRoutes + authz + swagger), `dto.go`,
+   `error.go` (codes + en/fa map + `writeError` + `translateErrorToCode`).
+7. Wire in `internal/app/app.go`, launch goroutines for consumers/fetchers.
+8. `go generate ./...` after every interface change; run `go test ./internal/usecase/...`,
+   then `go vet ./...` and `staticcheck ./...`.
